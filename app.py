@@ -1,13 +1,88 @@
+# --- core imports
+import os, io, json, uuid, datetime
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify
-import os, json, uuid, datetime
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import mm
+from flask_login import (
+    LoginManager, UserMixin, login_user, login_required, current_user, logout_user
+)
+from werkzeug.security import generate_password_hash, check_password_hash
 
+# --- Flask app first
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
+
+# --- paths & simple JSON helpers (used by auth bootstrap)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
+ACCOUNTS_PATH = os.path.join(DATA_DIR, "accounts.json")
+
+def load_json(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+def new_id():
+    return uuid.uuid4().hex[:10]
+
+# --- Login manager, bound to *this* app
+login_manager = LoginManager()
+login_manager.init_app(app)              # <--- IMPORTANT: attach to app here
+login_manager.login_view = "login"       # redirect target for @login_required
+
+# --- account model & loader
+def load_accounts():
+    return load_json(ACCOUNTS_PATH)
+
+def save_accounts(accounts):
+    save_json(ACCOUNTS_PATH, accounts)
+
+class Account(UserMixin):
+    def __init__(self, doc):
+        self.id = doc["id"]
+        self.username = doc["username"]
+        self.name = doc.get("name", self.username)
+        self.password_hash = doc["password_hash"]
+        self.is_admin = bool(doc.get("is_admin", False))
+
+@login_manager.user_loader
+def load_user(user_id):
+    for doc in load_accounts():
+        if doc["id"] == user_id:
+            return Account(doc)
+    return None
+
+def ensure_admin_exists():
+    accounts = load_accounts()
+    if not accounts:
+        acc = {
+            "id": new_id(),
+            "username": "admin",
+            "name": "Administrator",
+            "password_hash": generate_password_hash("change-me"),
+            "is_admin": True,
+            "created_at": datetime.datetime.utcnow().isoformat(),
+        }
+        accounts.append(acc)
+        save_accounts(accounts)
+
+# Defer bootstrap until the first request so all symbols are defined
+@app.before_first_request
+def _bootstrap_admin():
+    ensure_admin_exists()
+
+
+
+
 MATTERS_PATH = os.path.join(DATA_DIR, "matters.json")
 USERS_PATH = os.path.join(DATA_DIR, "users.json")
+AUDIT_PATH    = os.path.join(DATA_DIR, "audit.json")     
+
+
 
 FIELDS = [
     "Ref",
@@ -54,16 +129,6 @@ def canonicalize_matter_keys(m: dict) -> dict:
             m[new] = m.pop(old)
     return m
 
-def load_json(path):
-    if not os.path.exists(path):
-        return []
-    with open(path, "r") as f:
-        return json.load(f)
-
-def save_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
 
 def normalize_date(date_str):
     # Accepts DD/MM/YYYY or YYYY-MM-DD; returns YYYY-MM-DD
@@ -78,8 +143,66 @@ def normalize_date(date_str):
     except Exception:
         return date_str  # leave as-is
 
-def new_id():
-    return uuid.uuid4().hex[:10]
+
+
+
+@app.route("/login", methods=["GET","POST"])
+def login():
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip().lower()
+        password = request.form.get("password") or ""
+        for doc in load_accounts():
+            if doc["username"].lower() == username and check_password_hash(doc["password_hash"], password):
+                login_user(Account(doc))
+                flash("Signed in", "success")
+                return redirect(request.args.get("next") or url_for("dashboard"))
+        flash("Invalid credentials", "danger")
+    return render_template("login.html")
+
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    flash("Signed out", "info")
+    return redirect(url_for("login"))
+
+
+def load_audit():
+    if not os.path.exists(AUDIT_PATH):
+        return []
+    return load_json(AUDIT_PATH)
+
+def save_audit(events):
+    save_json(AUDIT_PATH, events)
+
+def append_audit(event):
+    events = load_audit()
+    events.append(event)
+    save_audit(events)
+
+def audit_log(action, matter_id, before=None, after=None, fields_changed=None, note=""):
+    user = getattr(current_user, "username", "system")
+    evt = {
+        "id": new_id(),
+        "ts": datetime.datetime.utcnow().isoformat(),
+        "user": user,
+        "action": action,              # "create" | "update" | "close" | "delete" | "import"
+        "matter_id": matter_id,
+        "fields_changed": fields_changed or [],
+        "note": note,
+        "before": before or {},
+        "after":  after or {},
+    }
+    append_audit(evt)
+
+def diff_fields(before: dict, after: dict):
+    changed = []
+    for f in FIELDS:
+        if (before or {}).get(f) != (after or {}).get(f):
+            changed.append(f)
+    return changed
+
+
 
 def get_matters():
     data = load_json(MATTERS_PATH)
@@ -140,6 +263,16 @@ def find_user_by_name(users, name):
         if u.get("name","").strip().lower() == name_norm:
             return u
     return None
+
+def find_matter_by_ref(ref: str):
+    if not ref:
+        return None
+    ref_norm = ref.strip().lower()
+    for m in get_matters():
+        if (m.get("Ref") or "").strip().lower() == ref_norm:
+            return m
+    return None
+
 
 
 from collections import defaultdict, Counter
@@ -313,10 +446,10 @@ def compute_owner_table(matters):
     rows.sort(key=lambda r: (-r["total"], r["owner"].lower()))
     return rows
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
+
 
 @app.route("/")
+@login_required
 def dashboard():
     matters = get_matters()
     total = len(matters)
@@ -372,6 +505,7 @@ def dashboard():
     )
 
 @app.route("/matters")
+@login_required
 def matters_list():
     matters = get_matters()
 
@@ -416,6 +550,7 @@ def matters_list():
 
 
 @app.route("/matters/new", methods=["GET","POST"])
+@login_required
 def matters_new():
 
     
@@ -439,8 +574,11 @@ def matters_new():
         flash("Matter created", "success")
         return redirect(url_for("matters_list"))
     return render_template("matters_form.html", matter=None, fields=FIELDS, users=users, allowed_statuses=ALLOWED_STATUSES)
+    audit_log("create", data["id"], before={}, after=data, fields_changed=list(FIELDS))
+
 
 @app.route("/matters/<mid>/close", methods=["POST"])
+@login_required
 def matters_close(mid):
     matters = get_matters()
     m = next((x for x in matters if x["id"] == mid), None)
@@ -462,9 +600,14 @@ def matters_close(mid):
     write_matters(matters)
     flash("Case closed.", "success")
     return redirect(url_for("matters_edit", mid=mid))
+    audit_log("close", m["id"], before={}, after=m, fields_changed=["Overall Status","Date Closed","Total Cycle Time"])
+
+
+
 
 
 @app.route("/matters/<mid>/edit", methods=["GET","POST"])
+@login_required
 def matters_edit(mid):
     users = get_users()
     matters = get_matters()
@@ -474,6 +617,10 @@ def matters_edit(mid):
         return redirect(url_for("matters_list"))
 
     if request.method == "POST":
+        # snapshot BEFORE
+        before = dict(matter)
+
+        # apply updates from form
         for f in FIELDS:
             val = (request.form.get(f) or "").strip()
             if f in ("Date Received", "Date Closed"):
@@ -485,16 +632,28 @@ def matters_edit(mid):
                     val = 0
             matter[f] = val
 
-        # Recompute total cycle time if a closed date is present
+        # recompute total cycle time if a closed date is present
         if matter.get("Date Closed"):
             matter["Total Cycle Time"] = compute_cycle_days(
                 matter.get("Date Received", ""), matter.get("Date Closed", "")
             )
 
         write_matters(matters)
+
+        # snapshot AFTER and log audit
+        after = dict(matter)
+        audit_log(
+            "update",
+            matter["id"],
+            before=before,
+            after=after,
+            fields_changed=diff_fields(before, after),
+        )
+
         flash("Matter updated", "success")
         return redirect(url_for("matters_list"))
 
+    # GET: render form with current values
     return render_template(
         "matters_form.html",
         matter=matter,
@@ -505,7 +664,9 @@ def matters_edit(mid):
 
 
 
+
 @app.route("/matters/<mid>/delete", methods=["POST"])
+@login_required
 def matters_delete(mid):
     matters = get_matters()
     matters = [m for m in matters if m["id"] != mid]
@@ -514,10 +675,12 @@ def matters_delete(mid):
     return redirect(url_for("matters_list"))
 
 @app.route("/export/json")
+@login_required
 def export_json():
     return send_file(MATTERS_PATH, as_attachment=True, download_name="matters.json")
 
 @app.route("/export/pdf")
+@login_required
 def export_pdf():
     # Simple landscape A4 PDF listing matters in a table-like layout
     matters = get_matters()
@@ -579,7 +742,183 @@ def export_pdf():
     c.save()
     return send_file(pdf_path, as_attachment=True, download_name="matters_export.pdf")
 
+@app.route("/audit/purge", methods=["POST"])
+@login_required
+def audit_purge():
+    # Allow only admins to purge
+    if not getattr(current_user, "is_admin", False):
+        flash("Admin only.", "danger")
+        return redirect(url_for("audit_index"))
+    save_audit([])  # clear file
+    flash("Audit log cleared.", "info")
+    return redirect(url_for("audit_index"))
+
+
+
+# Historic audit import (CSV/XLSX/JSON)
+@app.route("/audit/import", methods=["GET","POST"])
+@login_required
+def audit_import():
+    # Historic-only importer (Ref, Date of Update, Stage, Who With, Comments, Days with, Total Cycle Time)
+    flash("Using HISTORIC audit importer.", "info")
+
+    if request.method == "GET":
+        return render_template("audit_import.html", historic=True)
+
+    # lazy import
+    try:
+        import pandas as pd
+    except Exception:
+        flash("Historic import requires pandas/openpyxl for CSV/XLSX.", "danger")
+        return redirect(url_for("audit_import"))
+
+    f = request.files.get("file")
+    if not f or f.filename == "":
+        flash("Choose a file.", "danger")
+        return redirect(request.url)
+
+    name = f.filename.lower()
+    try:
+        if name.endswith(".json"):
+            payload = json.load(io.TextIOWrapper(f.stream, encoding="utf-8"))
+            rows = payload if isinstance(payload, list) else payload.get("events", [])
+            df = pd.DataFrame(rows)
+        elif name.endswith((".xlsx", ".xlsm")):
+            df = pd.read_excel(f, engine="openpyxl")
+        else:
+            df = pd.read_csv(f)
+    except Exception as e:
+        flash(f"Could not read file: {e}", "danger")
+        return redirect(request.url)
+
+    # ---- Inspect / normalise columns
+    def normcol(s): return str(s).strip().lower()
+    cols_norm_map = {normcol(c): c for c in df.columns}
+    app.logger.info("HISTORIC IMPORT detected columns: %s", cols_norm_map)
+
+    # Expected inputs
+    col_ref   = cols_norm_map.get("ref")
+    col_date  = cols_norm_map.get("date of update") or cols_norm_map.get("date_of_update") \
+                or cols_norm_map.get("updated") or cols_norm_map.get("date")
+    col_stage = cols_norm_map.get("stage")
+    col_who   = cols_norm_map.get("who with") or cols_norm_map.get("who_with")
+    col_comm  = cols_norm_map.get("comments") or cols_norm_map.get("comment") or cols_norm_map.get("commentary")
+    col_days  = cols_norm_map.get("days with") or cols_norm_map.get("days_with")
+    col_tct   = cols_norm_map.get("total cycle time") or cols_norm_map.get("total_cycle_time")
+    col_user  = cols_norm_map.get("user") or cols_norm_map.get("updated by") or cols_norm_map.get("updated_by")
+
+    # Hard fail if schema not present (prevents writing empty 'import/import' rows)
+    if not col_ref:
+        flash(f"Historic import refused: couldn't find a 'Ref' column. Columns were: {list(df.columns)}", "danger")
+        return redirect(request.url)
+    if not any([col_stage, col_who, col_comm, col_days, col_tct]):
+        flash("Historic import refused: none of the expected update columns found "
+              "(Stage, Who With, Comments, Days with, Total Cycle Time).", "danger")
+        return redirect(request.url)
+
+    # helpers
+    def parse_ts(v):
+        s = "" if (v is None or (hasattr(v, "isna") and v.isna())) else str(v).strip()
+        if not s:
+            return datetime.date.today().isoformat()
+        # DD/MM/YYYY
+        try:
+            return datetime.datetime.strptime(s, "%d/%m/%Y").date().isoformat()
+        except Exception:
+            pass
+        # ISO-ish
+        try:
+            return datetime.date.fromisoformat(s[:10]).isoformat()
+        except Exception:
+            return datetime.date.today().isoformat()
+
+    def to_int_safe(v):
+        try:
+            if v is None: return 0
+            s = str(v).replace(",", "").strip()
+            if s == "": return 0
+            return int(float(s))
+        except Exception:
+            return 0
+
+    def find_matter_by_ref(ref: str):
+        if not ref:
+            return None
+        ref_norm = ref.strip().lower()
+        for m in get_matters():
+            if (m.get("Ref") or "").strip().lower() == ref_norm:
+                return m
+        return None
+
+    events = load_audit()
+    added, skipped = 0, 0
+
+    # quick sample row debug
+    sample_debug = []
+
+    for idx, row in df.iterrows():
+        rv = row.get(col_ref) if col_ref else None
+        ref = "" if rv is None else str(rv).strip()
+        if not ref:
+            skipped += 1
+            continue
+
+        matter = find_matter_by_ref(ref)
+        if not matter:
+            skipped += 1
+            continue
+
+        after = {}
+        fields_changed = []
+
+        if col_stage and row.get(col_stage) is not None and str(row.get(col_stage)).strip() != "":
+            after["Stage"] = str(row.get(col_stage)).strip(); fields_changed.append("Stage")
+        if col_who and row.get(col_who) is not None and str(row.get(col_who)).strip() != "":
+            after["Who With"] = str(row.get(col_who)).strip(); fields_changed.append("Who With")
+        if col_comm and row.get(col_comm) is not None and str(row.get(col_comm)).strip() != "":
+            after["Commentary"] = str(row.get(col_comm)).strip(); fields_changed.append("Commentary")
+        if col_days and row.get(col_days) is not None and str(row.get(col_days)).strip() != "":
+            after["Days with Legal"] = to_int_safe(row.get(col_days)); fields_changed.append("Days with Legal")
+        if col_tct and row.get(col_tct) is not None and str(row.get(col_tct)).strip() != "":
+            after["Total Cycle Time"] = to_int_safe(row.get(col_tct)); fields_changed.append("Total Cycle Time")
+
+        if not fields_changed:
+            skipped += 1
+            continue
+
+        ts = parse_ts(row.get(col_date)) if col_date else datetime.date.today().isoformat()
+        user = ("" if not col_user or row.get(col_user) is None else str(row.get(col_user)).strip()) or "root"
+
+        evt = {
+            "id": new_id(),
+            "ts": ts,                 # e.g., '2022-02-24' (no microseconds)
+            "user": user,
+            "action": "update",       # <- never "import"
+            "matter_id": matter["id"],
+            "fields_changed": fields_changed,
+            "note": f"Historic import for Ref='{ref}'",
+            "before": {},
+            "after": after,
+        }
+        events.append(evt); added += 1
+
+        if len(sample_debug) < 3:
+            sample_debug.append({"idx": int(idx), "ref": ref, "user": user, "ts": ts, "after": after, "fields": fields_changed})
+
+    save_audit(events)
+
+    # Show quick import summary/debug in UI and logs
+    app.logger.info("HISTORIC IMPORT summary: added=%s skipped=%s sample=%s", added, skipped, sample_debug)
+    flash(f"Imported {added} historic updates; skipped {skipped}.", "success")
+    if sample_debug:
+        flash(f"Sample: {sample_debug}", "secondary")
+
+    return redirect(url_for("audit_index"))
+
+
+
 @app.route("/api/matters", methods=["GET", "POST"])
+@login_required
 def api_matters():
     if request.method == "POST":
         data = request.json or {}
@@ -648,6 +987,7 @@ def normalize_headers(df_columns):
     return mapping
 
 @app.route("/import", methods=["GET","POST"])
+@login_required
 def import_matters():
     import io
     # Lazy import (clear error if pandas/openpyxl missing)
@@ -783,11 +1123,13 @@ def import_matters():
 
 
 @app.route("/owners")
+@login_required
 def owners_list():
     users = get_users()
     return render_template("owners_list.html", users=users)
 
 @app.route("/owners/new", methods=["GET","POST"])
+@login_required
 def owners_new():
     users = get_users()
     if request.method == "POST":
@@ -807,6 +1149,7 @@ def owners_new():
     return render_template("owners_form.html", user=None)
 
 @app.route("/owners/<uid>/edit", methods=["GET","POST"])
+@login_required
 def owners_edit(uid):
     users = get_users()
     user = next((u for u in users if u["id"] == uid), None)
@@ -823,6 +1166,7 @@ def owners_edit(uid):
     return render_template("owners_form.html", user=user)
 
 @app.route("/owners/<uid>/delete", methods=["POST"])
+@login_required
 def owners_delete(uid):
     users = get_users()
     user = next((u for u in users if u["id"] == uid), None)
@@ -839,6 +1183,39 @@ def owners_delete(uid):
     save_users(users)
     flash("Owner deleted", "info")
     return redirect(url_for("owners_list"))
+
+
+@app.route("/audit")
+@login_required
+def audit_index():
+    # basic filters
+    q_user = (request.args.get("user") or "").strip().lower()
+    q_action = (request.args.get("action") or "").strip().lower()
+    q_matter = (request.args.get("matter_id") or "").strip()
+
+    evts = load_audit()
+    def keep(e):
+        ok = True
+        if q_user and q_user not in (e.get("user","").lower()):
+            ok = False
+        if q_action and q_action != e.get("action","").lower():
+            ok = False
+        if q_matter and q_matter != e.get("matter_id",""):
+            ok = False
+        return ok
+    evts = [e for e in evts if keep(e)]
+    evts.sort(key=lambda e: e.get("ts",""), reverse=True)
+    return render_template("audit_list.html", events=evts)
+
+@app.route("/matters/<mid>/audit")
+@login_required
+def audit_for_matter(mid):
+    evts = [e for e in load_audit() if e.get("matter_id")==mid]
+    evts.sort(key=lambda e: e.get("ts",""), reverse=True)
+    return render_template("audit_list.html", events=evts, matter_id=mid)
+
+
+
 
 
 if __name__ == "__main__":

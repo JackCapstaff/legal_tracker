@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>Audit Log {% if matter_id %}<small class="text-muted">for {{ matter_id }}</small>{% endif %}</h3>
+
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-3"><input name="user" placeholder="User" class="form-control" value="{{ request.args.get('user','') }}"></div>
+  <div class="col-md-3">
+    <select name="action" class="form-select">
+      {% set a = request.args.get('action','') %}
+      <option value="">All actions</option>
+      {% for x in ['create','update','close','delete','import'] %}
+        <option value="{{ x }}" {% if a==x %}selected{% endif %}>{{ x }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-3"><input name="matter_id" placeholder="Matter ID" class="form-control" value="{{ request.args.get('matter_id','') }}"></div>
+  <div class="col-md-3 d-flex gap-2">
+    <button class="btn btn-primary">Filter</button>
+    <a href="{{ url_for('audit_index') }}" class="btn btn-outline-secondary">Clear</a>
+    <a href="{{ url_for('audit_import') }}" class="btn btn-outline-info ms-auto">Import</a>
+  </div>
+</form>
+
+<div class="col-md-3 d-flex gap-2">
+  <button class="btn btn-primary">Filter</button>
+  <a href="{{ url_for('audit_index') }}" class="btn btn-outline-secondary">Clear</a>
+  <a href="{{ url_for('audit_import') }}" class="btn btn-outline-info ms-auto">Import</a>
+
+  {% if current_user.is_authenticated and current_user.is_admin %}
+  <form method="post" action="{{ url_for('audit_purge') }}">
+    <button class="btn btn-outline-danger"
+            onclick="return confirm('Clear ALL audit events? This cannot be undone.')">
+      Purge
+    </button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-sm table-striped mb-0">
+      <thead>
+        <tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Matter</th><th>Fields</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        {% for e in events %}
+          <tr>
+            <td><code>{{ e.ts }}</code></td>
+            <td>{{ e.user }}</td>
+            <td>{{ e.action }}</td>
+            <td><a href="{{ url_for('matters_edit', mid=e.matter_id) }}">{{ e.matter_id }}</a></td>
+            <td>{{ e.fields_changed|join(', ') }}</td>
+            <td>{{ e.note }}</td>
+          </tr>
+        {% endfor %}
+        {% if not events %}
+          <tr><td colspan="6" class="text-center text-muted">No audit events</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

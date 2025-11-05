@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>Import Audit Log</h3>
+<form method="post" enctype="multipart/form-data" class="card shadow-sm">
+  <div class="card-body">
+    {% if historic %}
+      <p class="text-muted">
+        Upload historic case updates with columns:
+        <code>Ref, Date of Update, Stage, Who With, Comments, Days with, Total Cycle Time</code>.
+        Matters are matched by <strong>Ref</strong>. Missing user is recorded as <code>root</code>.
+      </p>
+    {% else %}
+      <p class="text-muted">
+        Upload JSON/CSV/XLSX events with columns:
+        <code>ts, user, action, matter_id, fields_changed, note, before, after</code>.
+      </p>
+    {% endif %}
+    <input type="file" name="file" accept=".csv,.xlsx,.xlsm,.json" class="form-control" required>
+  </div>
+  <div class="card-footer d-flex justify-content-between">
+    <a href="{{ url_for('audit_index') }}" class="btn btn-outline-secondary">Cancel</a>
+    <button class="btn btn-primary">Import</button>
+  </div>
+</form>
+{% endblock %}
