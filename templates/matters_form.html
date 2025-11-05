@@ -8,19 +8,34 @@
         {% set value = (matter[name] if matter else '') %}
         <div class="col-md-6">
           <label class="form-label">{{ name }}</label>
+
           {% if name in ['Commentary'] %}
             <textarea name="{{ name }}" class="form-control" rows="3">{{ value }}</textarea>
+
           {% elif name in ['Days with Legal', 'Total Cycle Time'] %}
             <input type="number" name="{{ name }}" class="form-control" value="{{ value }}">
+
           {% elif name in ['Date Received'] %}
             <input type="date" name="{{ name }}" class="form-control" value="{{ value }}">
+
           {% elif name == 'Owner' %}
             <select name="Owner" class="form-select">
               <option value=""></option>
               {% for u in users %}
-                <option value="{{ u['name'] }}" {% if value==u['name'] %}selected{% endif %}>{{ u['name'] }}{% if u['job_title'] %} — {{ u['job_title'] }}{% endif %}</option>
+                <option value="{{ u['name'] }}" {% if value==u['name'] %}selected{% endif %}>
+                  {{ u['name'] }}{% if u['job_title'] %} — {{ u['job_title'] }}{% endif %}
+                </option>
               {% endfor %}
             </select>
+
+          {% elif name == 'Overall Status' %}
+            <select name="Overall Status" class="form-select" required>
+              <option value="">Select status</option>
+              {% for status in allowed_statuses %}
+                <option value="{{ status }}" {% if value==status %}selected{% endif %}>{{ status }}</option>
+              {% endfor %}
+            </select>
+
           {% else %}
             <input type="text" name="{{ name }}" class="form-control" value="{{ value }}">
           {% endif %}

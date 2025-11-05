@@ -56,11 +56,33 @@
 <div class="card shadow-sm">
   <div class="card-body">
     <h5 class="card-title">Recent Matters</h5>
+
+    <!-- Toggle: Show/Hide closed matters (defaults to hidden) -->
+    <form method="get" class="mb-2">
+      <label class="form-check-label">
+        <input
+          type="checkbox"
+          name="show_closed"
+          value="1"
+          class="form-check-input"
+          onchange="this.form.submit()"
+          {% if show_closed %}checked{% endif %}
+        >
+        Show closed matters
+      </label>
+    </form>
+
     <div class="table-responsive">
       <table class="table table-sm table-hover">
-        <thead><tr>
-          <th>Ref</th><th>Date Received</th><th>Counterparty</th><th>Stage</th><th>Status</th>
-        </tr></thead>
+        <thead>
+          <tr>
+            <th>Ref</th>
+            <th>Date Received</th>
+            <th>Counterparty</th>
+            <th>Stage</th>
+            <th>Status</th>
+          </tr>
+        </thead>
         <tbody>
           {% for m in matters %}
           <tr>

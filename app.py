@@ -29,6 +29,15 @@ FIELDS = [
     "Owner",
 ]
 
+ALLOWED_STATUSES = [
+    "Received/Under Review",
+    "Drafted/Comments Sent",
+    "Further/Final Review",
+    "Counterparty Signature",
+    "Internal Signature",
+    "Closed"
+]
+
 def load_json(path):
     if not os.path.exists(path):
         return []
@@ -101,6 +110,37 @@ def month_key(date_str):
         return date_str[:7]
     except Exception:
         return ""
+    
+import re
+
+def to_int(val, default=0):
+    """Parse integers safely from Excel-imported values (handles '', 'N/A', '12.0', '1,234')."""
+    if val is None:
+        return default
+    if isinstance(val, (int,)):
+        return val
+    try:
+        s = str(val).strip()
+        if s == "" or s.lower() in {"na", "n/a", "none"}:
+            return default
+        s = s.replace(",", "")
+        return int(float(s))
+    except Exception:
+        return default
+
+def is_closed(m):
+    """Treat common ‘closed’ synonyms as closed."""
+    s = str(m.get("Overall Status", "") or "").strip().lower()
+    # exact/contains match for common variations
+    return (
+        s == "closed"
+        or "close" in s
+        or "complete" in s
+        or "executed" in s
+        or "signed" in s
+        or s == "done"
+    )
+
 
 def compute_open_by_stage(matters):
     open_matters = [m for m in matters if str(m.get("Overall Status","")).lower() == "open"]
@@ -116,18 +156,20 @@ def compute_legal_vs_stakeholder_avgs(matters):
     legal_days = 0
     stakeholder_days = 0
     for m in open_matters:
-        dl = int(m.get("Days with Legal") or 0)
-        tt = int(m.get("Total Cycle Time") or 0)
+        dl = to_int(m.get("Days with Legal"), 0)
+        tt = to_int(m.get("Total Cycle Time"), 0)
         legal_days += dl
         stakeholder_days += max(tt - dl, 0)
     n = len(open_matters)
     return round(legal_days / n, 2), round(stakeholder_days / n, 2)
 
+
 def compute_monthly_counts(matters):
     """
     Monthly counts keyed by the *Date Received* month.
     - New Contracts: count of matters received that month.
-    - Closed Contracts: count of matters with Overall Status == 'Closed' received that month.
+    - Closed Contracts: count of matters whose status indicates closed (see is_closed),
+      bucketed in the *same receipt month*.
     - Rolling Open: cumulative (new - closed).
     """
     by_month_new = Counter()
@@ -138,7 +180,7 @@ def compute_monthly_counts(matters):
         if not mk:
             continue
         by_month_new[mk] += 1
-        if str(m.get("Overall Status", "")).strip().lower() == "closed":
+        if is_closed(m):
             by_month_closed[mk] += 1
 
     months = sorted(set(by_month_new.keys()) | set(by_month_closed.keys()))
@@ -154,33 +196,42 @@ def compute_monthly_counts(matters):
     return months, new_vals, closed_vals, rolling
 
 
+
 def compute_monthly_cycle_time_avgs(matters):
-    buckets = defaultdict(list)  # month -> list of (dl, sh, total)
+    """
+    Group by Date Received month and average:
+    - Avg. Time w/Legal
+    - Avg. Time w/Stakeholder (= Total Cycle Time - Days with Legal, clamped at 0)
+    - Avg. Total Cycle Time
+    """
+    buckets = defaultdict(list)  # month -> list of (dl, sh, tt)
     for m in matters:
-        mk = month_key(m.get("Date Received","") or "")
+        mk = month_key(m.get("Date Received", "") or "")
         if not mk:
             continue
-        dl = int(m.get("Days with Legal") or 0)
-        tt = int(m.get("Total Cycle Time") or 0)
+        dl = to_int(m.get("Days with Legal"), 0)
+        tt = to_int(m.get("Total Cycle Time"), 0)
         sh = max(tt - dl, 0)
         buckets[mk].append((dl, sh, tt))
 
     months = sorted(buckets.keys())
-    avg_dl = []
-    avg_sh = []
-    avg_tt = []
+    avg_dl, avg_sh, avg_tt = [], [], []
+
     for mk in months:
         rows = buckets[mk]
         if rows:
-            dl = sum(r[0] for r in rows)/len(rows)
-            sh = sum(r[1] for r in rows)/len(rows)
-            tt = sum(r[2] for r in rows)/len(rows)
+            n = len(rows)
+            dl = sum(r[0] for r in rows) / n
+            sh = sum(r[1] for r in rows) / n
+            tt = sum(r[2] for r in rows) / n
         else:
             dl = sh = tt = 0
-        avg_dl.append(round(dl,2))
-        avg_sh.append(round(sh,2))
-        avg_tt.append(round(tt,2))
+        avg_dl.append(round(dl, 2))
+        avg_sh.append(round(sh, 2))
+        avg_tt.append(round(tt, 2))
+
     return months, avg_dl, avg_sh, avg_tt
+
 
 def stage_bucket(stage):
     s = (stage or "").lower()
@@ -215,7 +266,7 @@ def dashboard():
     matters = get_matters()
     total = len(matters)
     open_count = sum(1 for m in matters if str(m.get("Overall Status","")).lower() == "open")
-    closed_count = sum(1 for m in matters if str(m.get("Overall Status","")).lower() == "closed")
+    closed_count = sum(1 for m in matters if is_closed(m))
     stages = {}
     for m in matters:
         s = m.get("Stage","") or "Unspecified"
@@ -228,15 +279,42 @@ def dashboard():
     months_cycle, avg_dl_vals, avg_sh_vals, avg_tt_vals = compute_monthly_cycle_time_avgs(matters)
     owner_rows = compute_owner_table(matters)
 
-    return render_template("dashboard.html",
-                           total=total, open_count=open_count, closed_count=closed_count,
-                           stages=stages, matters=matters[:5],
-                           open_by_stage_labels=open_by_stage_labels,
-                           open_by_stage_values=open_by_stage_values,
-                           avg_legal=avg_legal, avg_stakeholder=avg_stakeholder,
-                           months_counts=months_counts, new_vals=new_vals, closed_vals=closed_vals, rolling_vals=rolling_vals,
-                           months_cycle=months_cycle, avg_dl_vals=avg_dl_vals, avg_sh_vals=avg_sh_vals, avg_tt_vals=avg_tt_vals,
-                           owner_rows=owner_rows)
+    # --- Recent Matters toggle (default: hide closed) ---
+    show_closed = request.args.get("show_closed") == "1"
+
+    # sort newest first (by Date Received ISO string)
+    recent_matters = sorted(matters, key=lambda m: m.get("Date Received", ""), reverse=True)
+
+    def _is_closed(m):
+        return str(m.get("Overall Status", "")).strip().lower() == "closed"
+
+    if not show_closed:
+        recent_matters = [m for m in recent_matters if not _is_closed(m)]
+
+    recent_matters = recent_matters[:5]
+
+    return render_template(
+        "dashboard.html",
+        total=total,
+        open_count=open_count,
+        closed_count=closed_count,
+        stages=stages,
+        matters=recent_matters,            # <-- pass filtered list
+        show_closed=show_closed,           # <-- pass toggle state to template
+        open_by_stage_labels=open_by_stage_labels,
+        open_by_stage_values=open_by_stage_values,
+        avg_legal=avg_legal,
+        avg_stakeholder=avg_stakeholder,
+        months_counts=months_counts,
+        new_vals=new_vals,
+        closed_vals=closed_vals,
+        rolling_vals=rolling_vals,
+        months_cycle=months_cycle,
+        avg_dl_vals=avg_dl_vals,
+        avg_sh_vals=avg_sh_vals,
+        avg_tt_vals=avg_tt_vals,
+        owner_rows=owner_rows,
+    )
 
 @app.route("/matters")
 def matters_list():
@@ -280,8 +358,12 @@ def matters_list():
                            matters=filtered, q=q,
                            filter_options=filter_options, active_filters=active)
 
+
+
 @app.route("/matters/new", methods=["GET","POST"])
 def matters_new():
+
+    
     users = get_users()
     if request.method == "POST":
         data = {f: request.form.get(f, "").strip() for f in FIELDS}
@@ -301,7 +383,9 @@ def matters_new():
         write_matters(matters)
         flash("Matter created", "success")
         return redirect(url_for("matters_list"))
-    return render_template("matters_form.html", matter=None, fields=FIELDS, users=users)
+    return render_template("matters_form.html", matter=None, fields=FIELDS, users=users, allowed_statuses=ALLOWED_STATUSES)
+
+
 
 @app.route("/matters/<mid>/edit", methods=["GET","POST"])
 def matters_edit(mid):
@@ -325,7 +409,8 @@ def matters_edit(mid):
         write_matters(matters)
         flash("Matter updated", "success")
         return redirect(url_for("matters_list"))
-    return render_template("matters_form.html", matter=matter, fields=FIELDS, users=users)
+    return render_template("matters_form.html", matter=None, fields=FIELDS, users=users, allowed_statuses=ALLOWED_STATUSES)
+
 
 @app.route("/matters/<mid>/delete", methods=["POST"])
 def matters_delete(mid):
