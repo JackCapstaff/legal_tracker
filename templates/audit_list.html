@@ -3,56 +3,108 @@
 <h3>Audit Log {% if matter_id %}<small class="text-muted">for {{ matter_id }}</small>{% endif %}</h3>
 
 <form method="get" class="row g-2 mb-3">
-  <div class="col-md-3"><input name="user" placeholder="User" class="form-control" value="{{ request.args.get('user','') }}"></div>
   <div class="col-md-3">
+    <input name="user" placeholder="User" class="form-control" value="{{ request.args.get('user','') }}">
+  </div>
+  <div class="col-md-3">
+    {% set a = request.args.get('action','') %}
     <select name="action" class="form-select">
-      {% set a = request.args.get('action','') %}
       <option value="">All actions</option>
       {% for x in ['create','update','close','delete','import'] %}
         <option value="{{ x }}" {% if a==x %}selected{% endif %}>{{ x }}</option>
       {% endfor %}
     </select>
   </div>
-  <div class="col-md-3"><input name="matter_id" placeholder="Matter ID" class="form-control" value="{{ request.args.get('matter_id','') }}"></div>
+  <div class="col-md-3">
+    <input name="matter_id" placeholder="Matter ID" class="form-control" value="{{ request.args.get('matter_id','') }}">
+  </div>
   <div class="col-md-3 d-flex gap-2">
     <button class="btn btn-primary">Filter</button>
     <a href="{{ url_for('audit_index') }}" class="btn btn-outline-secondary">Clear</a>
     <a href="{{ url_for('audit_import') }}" class="btn btn-outline-info ms-auto">Import</a>
+    {% if current_user.is_authenticated and current_user.is_admin %}
+    <form method="post" action="{{ url_for('audit_purge') }}">
+      <button class="btn btn-outline-danger"
+              onclick="return confirm('Clear ALL audit events? This cannot be undone.')">
+        Purge
+      </button>
+    </form>
+    {% endif %}
   </div>
 </form>
 
-<div class="col-md-3 d-flex gap-2">
-  <button class="btn btn-primary">Filter</button>
-  <a href="{{ url_for('audit_index') }}" class="btn btn-outline-secondary">Clear</a>
-  <a href="{{ url_for('audit_import') }}" class="btn btn-outline-info ms-auto">Import</a>
-
-  {% if current_user.is_authenticated and current_user.is_admin %}
-  <form method="post" action="{{ url_for('audit_purge') }}">
-    <button class="btn btn-outline-danger"
-            onclick="return confirm('Clear ALL audit events? This cannot be undone.')">
-      Purge
-    </button>
-  </form>
-  {% endif %}
-</div>
-
 <div class="card shadow-sm">
   <div class="table-responsive">
-    <table class="table table-sm table-striped mb-0">
+    <table class="table table-sm table-striped mb-0 align-middle">
       <thead>
-        <tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Matter</th><th>Fields</th><th>Note</th></tr>
+        <tr>
+          <th style="width: 12rem;">Time (UTC)</th>
+          <th style="width: 10rem;">User</th>
+          <th style="width: 8rem;">Action</th>
+          <th style="width: 18rem;">Matter</th>
+          <th>Fields</th>
+          <th style="width: 8rem;"></th>
+        </tr>
       </thead>
       <tbody>
         {% for e in events %}
-          <tr>
-            <td><code>{{ e.ts }}</code></td>
-            <td>{{ e.user }}</td>
-            <td>{{ e.action }}</td>
-            <td><a href="{{ url_for('matters_edit', mid=e.matter_id) }}">{{ e.matter_id }}</a></td>
-            <td>{{ e.fields_changed|join(', ') }}</td>
-            <td>{{ e.note }}</td>
-          </tr>
+        <tr>
+          <td><code>{{ e.ts }}</code></td>
+          <td>{{ e.user }}</td>
+          <td>{{ e.action }}</td>
+          <td>
+            {% if e.matter_id %}
+              <a href="{{ url_for('matters_edit', mid=e.matter_id) }}">{{ e.matter_id }}</a>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if e._diff and e._diff|length > 0 %}
+              {{ e._diff | map(attribute='field') | list | join(', ') }}
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td class="text-end">
+            {% if e._diff and e._diff|length > 0 %}
+            <button class="btn btn-sm btn-outline-secondary"
+                    type="button"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#audit-{{ e.id }}">
+              Details
+            </button>
+            {% endif %}
+          </td>
+        </tr>
+
+        {% if e._diff and e._diff|length > 0 %}
+        <tr class="collapse" id="audit-{{ e.id }}">
+          <td colspan="6">
+            <div class="p-2">
+              <table class="table table-sm mb-0">
+                <thead>
+                  <tr><th style="width: 18rem;">Field</th><th>From</th><th>To</th></tr>
+                </thead>
+                <tbody>
+                  {% for d in e._diff %}
+                  <tr>
+                    <td><code>{{ d.field }}</code></td>
+                    <td>{{ d.before }}</td>
+                    <td>{{ d.after }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              {% if e.note %}
+                <div class="small text-muted mt-2">{{ e.note }}</div>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endif %}
         {% endfor %}
+
         {% if not events %}
           <tr><td colspan="6" class="text-center text-muted">No audit events</td></tr>
         {% endif %}

@@ -449,7 +449,6 @@ def compute_owner_table(matters):
 
 
 @app.route("/")
-@login_required
 def dashboard():
     matters = get_matters()
     total = len(matters)
@@ -556,6 +555,7 @@ def matters_new():
     
     users = get_users()
     if request.method == "POST":
+        audit_log("create", data["id"], before={}, after=data, fields_changed=list(FIELDS))
         data = {f: request.form.get(f, "").strip() for f in FIELDS}
         data["Date Received"] = normalize_date(data.get("Date Received"))
         try:
@@ -574,13 +574,14 @@ def matters_new():
         flash("Matter created", "success")
         return redirect(url_for("matters_list"))
     return render_template("matters_form.html", matter=None, fields=FIELDS, users=users, allowed_statuses=ALLOWED_STATUSES)
-    audit_log("create", data["id"], before={}, after=data, fields_changed=list(FIELDS))
+    
 
 
 @app.route("/matters/<mid>/close", methods=["POST"])
 @login_required
 def matters_close(mid):
     matters = get_matters()
+    audit_log("close", m["id"], before={}, after=m, fields_changed=["Overall Status","Date Closed","Total Cycle Time"])
     m = next((x for x in matters if x["id"] == mid), None)
     if not m:
         flash("Matter not found", "danger")
@@ -600,7 +601,7 @@ def matters_close(mid):
     write_matters(matters)
     flash("Case closed.", "success")
     return redirect(url_for("matters_edit", mid=mid))
-    audit_log("close", m["id"], before={}, after=m, fields_changed=["Overall Status","Date Closed","Total Cycle Time"])
+    
 
 
 
@@ -986,6 +987,49 @@ def normalize_headers(df_columns):
                 break
     return mapping
 
+def _coerce_obj(v):
+    # Accept dicts or JSON strings; otherwise return {}
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str) and v.strip():
+        try:
+            j = json.loads(v)
+            if isinstance(j, dict):
+                return j
+        except Exception:
+            pass
+    return {}
+
+def build_event_diff(evt: dict):
+    """
+    Return list of {field, before, after} rows for display.
+    Works if before/after are strings or missing.
+    Falls back to fields_changed when necessary.
+    """
+    before = _coerce_obj(evt.get("before"))
+    after  = _coerce_obj(evt.get("after"))
+
+    keys = set(before.keys()) | set(after.keys())
+    fc = evt.get("fields_changed") or []
+    if not keys and fc:
+        keys = set(fc)
+
+    # Order: fields_changed first (if present), then remaining alpha
+    ordered = list(dict.fromkeys(list(fc) + sorted(k for k in keys if k not in fc)))
+
+    out = []
+    for k in ordered:
+        b = before.get(k, "")
+        a = after.get(k, "")
+        # Always show a line if it's in the ordered list, even if values look empty
+        out.append({
+            "field": k,
+            "before": ("—" if b in (None, "") else str(b)),
+            "after":  ("—" if a in (None, "") else str(a)),
+        })
+    return out
+
+
 @app.route("/import", methods=["GET","POST"])
 @login_required
 def import_matters():
@@ -1188,23 +1232,23 @@ def owners_delete(uid):
 @app.route("/audit")
 @login_required
 def audit_index():
-    # basic filters
     q_user = (request.args.get("user") or "").strip().lower()
     q_action = (request.args.get("action") or "").strip().lower()
     q_matter = (request.args.get("matter_id") or "").strip()
 
     evts = load_audit()
     def keep(e):
-        ok = True
-        if q_user and q_user not in (e.get("user","").lower()):
-            ok = False
-        if q_action and q_action != e.get("action","").lower():
-            ok = False
-        if q_matter and q_matter != e.get("matter_id",""):
-            ok = False
-        return ok
+        if q_user and q_user not in (e.get("user","").lower()): return False
+        if q_action and q_action != e.get("action","").lower(): return False
+        if q_matter and q_matter != e.get("matter_id",""):     return False
+        return True
     evts = [e for e in evts if keep(e)]
     evts.sort(key=lambda e: e.get("ts",""), reverse=True)
+
+    # Attach diffs
+    for e in evts:
+        e["_diff"] = build_event_diff(e)
+
     return render_template("audit_list.html", events=evts)
 
 @app.route("/matters/<mid>/audit")
@@ -1212,7 +1256,12 @@ def audit_index():
 def audit_for_matter(mid):
     evts = [e for e in load_audit() if e.get("matter_id")==mid]
     evts.sort(key=lambda e: e.get("ts",""), reverse=True)
+    for e in evts:
+        e["_diff"] = build_event_diff(e)
     return render_template("audit_list.html", events=evts, matter_id=mid)
+
+
+
 
 
 
