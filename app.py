@@ -23,6 +23,7 @@ FIELDS = [
     "Who With",
     "Stage",
     "Overall Status",
+    "Date Closed",
     "Commentary",
     "Days with Legal",
     "Total Cycle Time",
@@ -37,6 +38,21 @@ ALLOWED_STATUSES = [
     "Internal Signature",
     "Closed"
 ]
+
+# --- Canonicalize any legacy keys saved by older imports ---
+LEGACY_TO_CANON = {
+    "Date": "Date Received",
+    "Group": "Group Entity",
+    "Status": "Overall Status",
+    # add other one-offs if you find them
+}
+
+def canonicalize_matter_keys(m: dict) -> dict:
+    """Mutates a matter dict in place, moving legacy keys to canonical FIELDS."""
+    for old, new in LEGACY_TO_CANON.items():
+        if old in m and new not in m:
+            m[new] = m.pop(old)
+    return m
 
 def load_json(path):
     if not os.path.exists(path):
@@ -67,12 +83,36 @@ def new_id():
 
 def get_matters():
     data = load_json(MATTERS_PATH)
-    # Ensure required keys exist
+
+    # Optional legacy key fixer (safe to keep)
+    LEGACY_TO_CANON = {
+        "Date": "Date Received",
+        "Group": "Group Entity",
+        "Status": "Overall Status",
+    }
+    def canonicalize_matter_keys(m: dict) -> dict:
+        for old, new in LEGACY_TO_CANON.items():
+            if old in m and new not in m:
+                m[new] = m.pop(old)
+        return m
+
+    changed = False
     for m in data:
-        m.setdefault("id", new_id())
+        canonicalize_matter_keys(m)
+        if not m.get("id"):
+            m["id"] = new_id()
+            changed = True
         for f in FIELDS:
-            m.setdefault(f, "")
+            if f not in m:
+                m[f] = ""
+
+    # ✨ Persist any ids we just generated so they remain stable across requests
+    if changed:
+        write_matters(data)
+
     return data
+
+
 
 def write_matters(matters):
     save_json(MATTERS_PATH, matters)
@@ -140,6 +180,21 @@ def is_closed(m):
         or "signed" in s
         or s == "done"
     )
+
+from datetime import date
+
+def compute_cycle_days(date_received_iso: str, date_closed_iso: str) -> int:
+    """Return calendar day difference (>=0) between ISO dates YYYY-MM-DD."""
+    try:
+        if not date_received_iso or not date_closed_iso:
+            return 0
+        d1 = datetime.date.fromisoformat(str(date_received_iso))
+        d2 = datetime.date.fromisoformat(str(date_closed_iso))
+        delta = (d2 - d1).days
+        return max(delta, 0)
+    except Exception:
+        return 0
+
 
 
 def compute_open_by_stage(matters):
@@ -385,6 +440,28 @@ def matters_new():
         return redirect(url_for("matters_list"))
     return render_template("matters_form.html", matter=None, fields=FIELDS, users=users, allowed_statuses=ALLOWED_STATUSES)
 
+@app.route("/matters/<mid>/close", methods=["POST"])
+def matters_close(mid):
+    matters = get_matters()
+    m = next((x for x in matters if x["id"] == mid), None)
+    if not m:
+        flash("Matter not found", "danger")
+        return redirect(url_for("matters_list"))
+
+    # Set closed fields
+    today_iso = date.today().isoformat()
+    m["Overall Status"] = "Closed"
+    m["Date Closed"] = today_iso
+
+    # Ensure Date Received is normalized
+    m["Date Received"] = normalize_date(m.get("Date Received", ""))
+
+    # Recalculate cycle time
+    m["Total Cycle Time"] = compute_cycle_days(m.get("Date Received", ""), today_iso)
+
+    write_matters(matters)
+    flash("Case closed.", "success")
+    return redirect(url_for("matters_edit", mid=mid))
 
 
 @app.route("/matters/<mid>/edit", methods=["GET","POST"])
@@ -395,10 +472,11 @@ def matters_edit(mid):
     if not matter:
         flash("Matter not found", "danger")
         return redirect(url_for("matters_list"))
+
     if request.method == "POST":
         for f in FIELDS:
-            val = request.form.get(f, "").strip()
-            if f == "Date Received":
+            val = (request.form.get(f) or "").strip()
+            if f in ("Date Received", "Date Closed"):
                 val = normalize_date(val)
             if f in ("Days with Legal", "Total Cycle Time"):
                 try:
@@ -406,10 +484,25 @@ def matters_edit(mid):
                 except ValueError:
                     val = 0
             matter[f] = val
+
+        # Recompute total cycle time if a closed date is present
+        if matter.get("Date Closed"):
+            matter["Total Cycle Time"] = compute_cycle_days(
+                matter.get("Date Received", ""), matter.get("Date Closed", "")
+            )
+
         write_matters(matters)
         flash("Matter updated", "success")
         return redirect(url_for("matters_list"))
-    return render_template("matters_form.html", matter=None, fields=FIELDS, users=users, allowed_statuses=ALLOWED_STATUSES)
+
+    return render_template(
+        "matters_form.html",
+        matter=matter,
+        fields=FIELDS,
+        users=users,
+        allowed_statuses=ALLOWED_STATUSES,
+    )
+
 
 
 @app.route("/matters/<mid>/delete", methods=["POST"])
@@ -525,6 +618,9 @@ HEADER_ALIASES = {
     "Days with Legal": ["Days with Legal", "Days_with_Legal", "Days With Legal"],
     "Total Cycle Time": ["Total Cycle Time", "Total_Cycle_Time", "Cycle Time"],
     "Owner": ["Owner", "Matter Owner", "Assigned To", "Assignee", "Legal"],
+    "Date Received": ["Date Received", "Date"],
+    "Group Entity":  ["Group Entity", "Group"],
+    "Overall Status": ["Overall Status", "Status"],
 }
 
 def normalize_headers(df_columns):
@@ -553,13 +649,17 @@ def normalize_headers(df_columns):
 
 @app.route("/import", methods=["GET","POST"])
 def import_matters():
+    import io
+    # Lazy import (clear error if pandas/openpyxl missing)
     try:
         import pandas as pd
-    except Exception as e:
-        flash("Importer requires pandas. Please install requirements (pip install -r requirements.txt).", "danger")
+    except Exception:
+        flash("Importer requires pandas (and openpyxl). Run: pip install -r requirements.txt", "danger")
         return redirect(url_for("dashboard"))
+
     if request.method == "GET":
         return render_template("import.html")
+
     file = request.files.get("file")
     sheet = (request.form.get("sheet") or "").strip()
     mode = request.form.get("mode") or "append"
@@ -572,25 +672,24 @@ def import_matters():
         flash("Unsupported file type. Please upload .xlsx or .xlsm", "danger")
         return redirect(request.url)
 
-    uploads_dir = os.path.join(DATA_DIR, "uploads")
-    os.makedirs(uploads_dir, exist_ok=True)
-    safe_name = secure_filename(file.filename)
-    saved_path = os.path.join(uploads_dir, safe_name)
-    file.save(saved_path)
+    # Read the upload entirely in-memory
+    file_bytes = file.read()
+    if not file_bytes:
+        flash("Uploaded file is empty.", "danger")
+        return redirect(request.url)
 
     try:
-        # read with pandas/openpyxl
+        bio = io.BytesIO(file_bytes)
         if sheet:
-            df = pd.read_excel(saved_path, sheet_name=sheet, engine="openpyxl", header=0 if has_header else None)
+            df = pd.read_excel(bio, sheet_name=sheet, engine="openpyxl", header=0 if has_header else None)
         else:
-            df = pd.read_excel(saved_path, engine="openpyxl", header=0 if has_header else None)
+            df = pd.read_excel(bio, engine="openpyxl", header=0 if has_header else None)
     except Exception as e:
         flash(f"Could not read Excel: {e}", "danger")
         return redirect(request.url)
 
-    # If multiple sheets returned, pick the first if no sheet specified but excel had multiple with dict
+    # If multiple sheets returned, pick a likely one
     if isinstance(df, dict):
-        # Prefer a sheet named like Contracts/Contract/Matters if present
         prefer = None
         for k in df.keys():
             lk = str(k).lower()
@@ -599,50 +698,65 @@ def import_matters():
                 break
         df = df.get(prefer or list(df.keys())[0])
 
-    # If headerless, generate simple headers
-    if df.columns.dtype != 'object':
-        df.columns = [f"col_{i}" for i in range(len(df.columns))]
-
-    # Normalize columns -> canonical fields
+    # Map headers -> canonical fields
     mapping = normalize_headers(df.columns)
-    # Build matters
+
     records = []
     for _, row in df.iterrows():
         rec = {f: "" for f in FIELDS}
+        rec.setdefault("Date Closed", "")
+
+        # copy values by mapped columns
         for col, val in row.items():
             if col in mapping:
                 key = mapping[col]
-                v = "" if (pd.isna(val)) else val
-                if isinstance(v, (pd.Timestamp,)):
-                    v = v.date().isoformat()
-                rec[key] = str(v) if not isinstance(v, (int,float)) else (int(v) if float(v).is_integer() else float(v))
-        # Normalize date
+                if pd.isna(val):
+                    v = ""
+                elif isinstance(val, pd.Timestamp):
+                    v = val.date().isoformat()
+                else:
+                    v = str(val)
+                rec[key] = v.strip()
+
+        # normalize dates
         rec["Date Received"] = normalize_date(rec.get("Date Received"))
-        # Coerce ints
-        for k in ("Days with Legal", "Total Cycle Time"):
+        if rec.get("Date Closed"):
+            rec["Date Closed"] = normalize_date(rec.get("Date Closed"))
+
+        # ints
+        try:
+            rec["Days with Legal"] = int(float(rec.get("Days with Legal") or 0))
+        except Exception:
+            rec["Days with Legal"] = 0
+        try:
+            rec["Total Cycle Time"] = int(float(rec.get("Total Cycle Time") or 0))
+        except Exception:
+            rec["Total Cycle Time"] = 0
+
+        # ---> DERIVE Date Closed if missing but cycle time present
+        if not rec.get("Date Closed") and rec.get("Date Received") and rec.get("Total Cycle Time", 0) > 0:
             try:
-                rec[k] = int(float(rec.get(k) or 0))
+                d0 = datetime.date.fromisoformat(str(rec["Date Received"]))
+                rec["Date Closed"] = (d0 + datetime.timedelta(days=int(rec["Total Cycle Time"]))).isoformat()
             except Exception:
-                rec[k] = 0
-        # Owner fallback to Legal if blank
-        if not rec.get("Owner"):
-            rec["Owner"] = rec.get("Legal", "")
-        rec["id"] = new_id()
-        # Skip completely empty rows (must have Ref or Counterparty)
+                rec["Date Closed"] = rec.get("Date Closed", "")
+
+        # skip empty rows
         if rec.get("Ref") or rec.get("Counterparty"):
+            rec["id"] = new_id()
             records.append(rec)
 
     if not records:
+        app.logger.warning("Import parsed zero records. Mapped columns: %s", mapping)
         flash("No valid records found to import.", "warning")
         return redirect(url_for("import_matters"))
 
-    # AUTO-CREATE OWNERS: gather names from Owner (preferred) or Legal fallback
+    # AUTO-CREATE OWNERS from Owner / Legal
     owner_names = set()
     for r in records:
         name = (r.get("Owner") or r.get("Legal") or "").strip()
         if name:
             owner_names.add(name)
-
     users = get_users()
     changed = False
     for name in sorted(owner_names):
@@ -652,18 +766,19 @@ def import_matters():
     if changed:
         save_users(users)
 
+    # Write matters
     if mode == "replace":
         write_matters(records)
         flash(f"Imported {len(records)} matters (replaced existing).", "success")
     else:
         existing = get_matters()
-        # Deduplicate by (Ref, Counterparty, Date Received)
         seen = {(m.get("Ref",""), m.get("Counterparty",""), m.get("Date Received","")) for m in existing}
         new_items = [r for r in records if (r.get("Ref",""), r.get("Counterparty",""), r.get("Date Received","")) not in seen]
         write_matters(existing + new_items)
         flash(f"Imported {len(new_items)} new matters (skipped {len(records)-len(new_items)} possible duplicates).", "success")
 
     return redirect(url_for("matters_list"))
+
 
 
 
