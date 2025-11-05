@@ -12,7 +12,18 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
 
 # --- paths & simple JSON helpers (used by auth bootstrap)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(APP_DIR, "data")
+
+def _default_data_dir():
+    d = os.environ.get("DATA_DIR")
+    if d:
+        os.makedirs(d, exist_ok=True)
+        return d
+    d = "/tmp/legal-tracker-data"
+    os.makedirs(d, exist_ok=True)
+    return d
+
+DATA_DIR = _default_data_dir()
+
 ACCOUNTS_PATH = os.path.join(DATA_DIR, "accounts.json")
 
 def load_json(path):
@@ -70,10 +81,15 @@ def ensure_admin_exists():
         accounts.append(acc)
         save_accounts(accounts)
 
-# Defer bootstrap until the first request so all symbols are defined
-@app.before_first_request
+# Run-once bootstrap in Flask 3.x (no before_first_request)
+_bootstrapped = False
+
+@app.before_request
 def _bootstrap_admin():
-    ensure_admin_exists()
+    global _bootstrapped
+    if not _bootstrapped:
+        ensure_admin_exists()
+        _bootstrapped = True
 
 
 
