@@ -1,0 +1,227 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h6 class="text-muted">Total Matters</h6>
+        <h2>{{ total }}</h2>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h6 class="text-muted">Open</h6>
+        <h2>{{ open_count }}</h2>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h6 class="text-muted">Closed</h6>
+        <h2>{{ closed_count }}</h2>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3 d-flex align-items-stretch">
+    <div class="card shadow-sm w-100">
+      <div class="card-body">
+        <h6 class="text-muted">Quick Actions</h6>
+        <a href="{{ url_for('matters_new') }}" class="btn btn-primary btn-sm">Add Matter</a>
+        <a href="{{ url_for('export_pdf') }}" class="btn btn-outline-secondary btn-sm">Export PDF</a>
+        <a href="{{ url_for('export_json') }}" class="btn btn-outline-secondary btn-sm">Export JSON</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <h5 class="card-title">Stages</h5>
+    <div class="row">
+      {% for s, n in stages.items() %}
+      <div class="col-md-3 mb-2">
+        <div class="p-2 border rounded bg-white d-flex justify-content-between">
+          <span>{{ s }}</span>
+          <span class="badge text-bg-primary">{{ n }}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h5 class="card-title">Recent Matters</h5>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover">
+        <thead><tr>
+          <th>Ref</th><th>Date Received</th><th>Counterparty</th><th>Stage</th><th>Status</th>
+        </tr></thead>
+        <tbody>
+          {% for m in matters %}
+          <tr>
+            <td><a href="{{ url_for('matters_edit', mid=m.id) }}">{{ m['Ref'] }}</a></td>
+            <td>{{ m['Date Received'] }}</td>
+            <td>{{ m['Counterparty'] }}</td>
+            <td>{{ m['Stage'] }}</td>
+            <td>{{ m['Overall Status'] }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Charts -->
+<div class="row g-4 mt-1">
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Open Contracts by Stage</h5>
+        <canvas id="stageChart" height="160"></canvas>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Legal vs Stakeholders</h5>
+        <canvas id="legalStakeChart" height="160"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mt-1">
+  <div class="col-lg-12">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">No. Contracts</h5>
+        <canvas id="countsChart" height="220"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mt-1">
+  <div class="col-lg-12">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Contract Cycle Time</h5>
+        <canvas id="cycleChart" height="220"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mt-1">
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Owners Snapshot (Open)</h5>
+        <div class="table-responsive">
+          <table class="table table-sm table-striped align-middle">
+            <thead><tr><th>Owner</th><th>Total Open</th><th>No. with Legal</th><th>No. with Others</th></tr></thead>
+            <tbody>
+              {% for r in owner_rows %}
+              <tr>
+                <td>{{ r.owner }}</td>
+                <td>{{ r.total }}</td>
+                <td>{{ r.with_legal }}</td>
+                <td>{{ r.with_others }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  // Data from Flask
+  const openByStageLabels = {{ open_by_stage_labels|tojson }};
+  const openByStageValues = {{ open_by_stage_values|tojson }};
+
+  const avgLegal = {{ avg_legal|tojson }};
+  const avgStake = {{ avg_stakeholder|tojson }};
+
+  const monthsCounts = {{ months_counts|tojson }};
+  const newVals = {{ new_vals|tojson }};
+  const closedVals = {{ closed_vals|tojson }};
+  const rollingVals = {{ rolling_vals|tojson }};
+
+  const monthsCycle = {{ months_cycle|tojson }};
+  const avgDL = {{ avg_dl_vals|tojson }};
+  const avgSH = {{ avg_sh_vals|tojson }};
+  const avgTT = {{ avg_tt_vals|tojson }};
+
+  // Open by Stage (horizontal bar)
+  new Chart(document.getElementById('stageChart'), {
+    type: 'bar',
+    data: {
+      labels: openByStageLabels,
+      datasets: [{
+        label: 'Open',
+        data: openByStageValues,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        title: { display: false }
+      },
+      scales: { x: { beginAtZero: true } }
+    }
+  });
+
+  // Legal vs Stakeholders (pie)
+  new Chart(document.getElementById('legalStakeChart'), {
+    type: 'pie',
+    data: {
+      labels: ['Avg. Time w/Legal', 'Avg. Time w/Stakeholder'],
+      datasets: [{
+        data: [avgLegal, avgStake],
+      }]
+    },
+    options: { responsive: true }
+  });
+
+  // No. Contracts (bars + line)
+  new Chart(document.getElementById('countsChart'), {
+    type: 'bar',
+    data: {
+      labels: monthsCounts,
+      datasets: [
+        { type: 'bar', label: 'New Contracts', data: newVals },
+        { type: 'bar', label: 'Closed Contracts', data: closedVals },
+        { type: 'line', label: 'Rolling Open Contracts', data: rollingVals, tension: 0.3 }
+      ]
+    },
+    options: { responsive: true, scales: { y: { beginAtZero: true } } }
+  });
+
+  // Contract Cycle Time (stacked bars + line)
+  new Chart(document.getElementById('cycleChart'), {
+    data: {
+      labels: monthsCycle,
+      datasets: [
+        { type: 'bar', label: 'Avg. Time w/Legal', data: avgDL, stack: 'time' },
+        { type: 'bar', label: 'Avg. Time w/Stakeholder', data: avgSH, stack: 'time' },
+        { type: 'line', label: 'Avg. Total Cycle Time', data: avgTT, tension: 0.3 }
+      ]
+    },
+    options: { responsive: true, scales: { y: { beginAtZero: true } } }
+  });
+</script>
+
+{% endblock %}

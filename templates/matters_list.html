@@ -1,0 +1,164 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card shadow-sm mb-3">
+  <div class="card-body">
+    <form method="get">
+      <div class="row g-2 align-items-end">
+        <div class="col-12 col-md-3 mb-2">
+          <label class="form-label">Search</label>
+          <input type="search" class="form-control form-control-sm" name="q" value="{{ q }}" placeholder="Search">
+        </div>
+
+        {% set ff = filter_options %}
+        {% set act = active_filters %}
+
+        <div class="col-6 col-md-3 mb-2">
+          <label class="form-label">Group Entity</label>
+          <select class="form-select form-select-sm" name="Group_Entity">
+            <option value="">All</option>
+            {% for v in ff['Group Entity'] %}
+              <option value="{{ v }}" {% if act['Group Entity']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-3 mb-2">
+          <label class="form-label">Counterparty</label>
+          <select class="form-select form-select-sm" name="Counterparty">
+            <option value="">All</option>
+            {% for v in ff['Counterparty'] %}
+              <option value="{{ v }}" {% if act['Counterparty']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-2 mb-2">
+          <label class="form-label">Branch</label>
+          <select class="form-select form-select-sm" name="Branch">
+            <option value="">All</option>
+            {% for v in ff['Branch'] %}
+              <option value="{{ v }}" {% if act['Branch']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-2 mb-2">
+          <label class="form-label">Legal</label>
+          <select class="form-select form-select-sm" name="Legal">
+            <option value="">All</option>
+            {% for v in ff['Legal'] %}
+              <option value="{{ v }}" {% if act['Legal']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-2 mb-2">
+          <label class="form-label">Internal Dept</label>
+          <select class="form-select form-select-sm" name="Internal_Dept">
+            <option value="">All</option>
+            {% for v in ff['Internal Dept'] %}
+              <option value="{{ v }}" {% if act['Internal Dept']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-2 mb-2">
+          <label class="form-label">Contract Type</label>
+          <select class="form-select form-select-sm" name="Contract_Type">
+            <option value="">All</option>
+            {% for v in ff['Contract Type'] %}
+              <option value="{{ v }}" {% if act['Contract Type']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-3 mb-2">
+          <label class="form-label">Internal Stakeholder</label>
+          <select class="form-select form-select-sm" name="Internal_Stakeholder">
+            <option value="">All</option>
+            {% for v in ff['Internal Stakeholder'] %}
+              <option value="{{ v }}" {% if act['Internal Stakeholder']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-2 mb-2">
+          <label class="form-label">Who With</label>
+          <select class="form-select form-select-sm" name="Who_With">
+            <option value="">All</option>
+            {% for v in ff['Who With'] %}
+              <option value="{{ v }}" {% if act['Who With']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-md-2 mb-2">
+            <label class="form-label">Stage</label>
+            <select class="form-select form-select-sm" name="Stage">
+              <option value="">All</option>
+              {% for v in ff['Stage'] %}
+                <option value="{{ v }}" {% if act['Stage']==v %}selected{% endif %}>{{ v }}</option>
+              {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-6 col-md-2 mb-2">
+          <label class="form-label">Overall Status</label>
+          <select class="form-select form-select-sm" name="Overall_Status">
+            <option value="">All</option>
+            {% for v in ff['Overall Status'] %}
+              <option value="{{ v }}" {% if act['Overall Status']==v %}selected{% endif %}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-12 col-md-3 mb-2 d-flex gap-2">
+          <button class="btn btn-primary btn-sm" type="submit">Apply</button>
+          <a href="{{ url_for('matters_list') }}" class="btn btn-outline-secondary btn-sm">Clear</a>
+          <a href="{{ url_for('matters_new') }}" class="btn btn-success btn-sm ms-auto">+ New</a>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle">
+        <thead>
+          <tr>
+            <th>Ref</th>
+            <th>Date</th>
+            <th>Group</th>
+            <th>Counterparty</th>
+            <th>Stage</th>
+            <th>Status</th>
+            <th>Owner</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in matters %}
+          <tr>
+            <td>{{ m['Ref'] }}</td>
+            <td>{{ m['Date Received'] }}</td>
+            <td>{{ m['Group Entity'] }}</td>
+            <td>{{ m['Counterparty'] }}</td>
+            <td>{{ m['Stage'] }}</td>
+            <td>{{ m['Overall Status'] }}</td>
+            <td>{{ m['Owner'] }}</td>
+            <td class="text-end">
+              <a class="btn btn-sm btn-primary" href="{{ url_for('matters_edit', mid=m['id']) }}">Edit</a>
+              <form method="post" action="{{ url_for('matters_delete', mid=m['id']) }}" class="d-inline" onsubmit="return confirm('Delete this matter?')">
+                <button class="btn btn-sm btn-outline-danger">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

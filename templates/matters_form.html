@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>{{ 'Edit Matter' if matter else 'New Matter' }}</h3>
+<form method="post" class="card shadow-sm">
+  <div class="card-body">
+    <div class="row g-3">
+      {% for name in fields %}
+        {% set value = (matter[name] if matter else '') %}
+        <div class="col-md-6">
+          <label class="form-label">{{ name }}</label>
+          {% if name in ['Commentary'] %}
+            <textarea name="{{ name }}" class="form-control" rows="3">{{ value }}</textarea>
+          {% elif name in ['Days with Legal', 'Total Cycle Time'] %}
+            <input type="number" name="{{ name }}" class="form-control" value="{{ value }}">
+          {% elif name in ['Date Received'] %}
+            <input type="date" name="{{ name }}" class="form-control" value="{{ value }}">
+          {% elif name == 'Owner' %}
+            <select name="Owner" class="form-select">
+              <option value=""></option>
+              {% for u in users %}
+                <option value="{{ u['name'] }}" {% if value==u['name'] %}selected{% endif %}>{{ u['name'] }}{% if u['job_title'] %} — {{ u['job_title'] }}{% endif %}</option>
+              {% endfor %}
+            </select>
+          {% else %}
+            <input type="text" name="{{ name }}" class="form-control" value="{{ value }}">
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card-footer d-flex justify-content-between">
+    <a href="{{ url_for('matters_list') }}" class="btn btn-outline-secondary">Cancel</a>
+    <button class="btn btn-primary" type="submit">Save</button>
+  </div>
+</form>
+{% endblock %}

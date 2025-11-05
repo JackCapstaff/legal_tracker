@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3>Import Matters from Excel</h3>
+<p class="text-muted">Upload your tracker workbook (.xlsx or .xlsm). We'll map columns to the JSON fields used by the app.</p>
+<form method="post" enctype="multipart/form-data" class="card shadow-sm">
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label">Excel file</label>
+        <input type="file" name="file" accept=".xlsx,.xlsm" class="form-control" required>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Sheet name (optional)</label>
+        <input type="text" name="sheet" class="form-control" placeholder="e.g. Contracts">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Mode</label>
+        <select class="form-select" name="mode">
+          <option value="append" selected>Append to existing</option>
+          <option value="replace">Replace all current matters</option>
+        </select>
+      </div>
+      <div class="col-12">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" value="1" id="has_header" name="has_header" checked>
+          <label class="form-check-label" for="has_header">
+            First row is header
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card-footer d-flex justify-content-between">
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+    <button class="btn btn-primary" type="submit">Import</button>
+  </div>
+</form>
+{% endblock %}
